@@ -1,5 +1,173 @@
+# Function to check for latest .NET SDK version
+function Get-LatestDotNetSDKVersion {
+    param(
+        [string]$ChannelVersion = "8.0"
+    )
+    
+    try {
+        Write-Output "Checking for latest .NET SDK version..."
+        $releases = Invoke-RestMethod -Uri 'https://dotnetcli.azureedge.net/dotnet/release-metadata/releases-index.json' -Headers @{'User-Agent'='PowerShell'}
+        $channel = $releases.'releases-index' | Where-Object { $_.'channel-version' -eq $ChannelVersion }
+        
+        if ($channel) {
+            return @{
+                Version = $channel.'latest-sdk'
+                ReleaseDate = $channel.'latest-release-date'
+            }
+        }
+        return $null
+    }
+    catch {
+        Write-Warning "Failed to check for latest .NET SDK version: $_"
+        return $null
+    }
+}
+
+# Function to get latest SDK download URLs
+function Get-LatestSDKDownloadUrls {
+    param(
+        [string]$ChannelVersion = "8.0"
+    )
+    
+    try {
+        $releases = Invoke-RestMethod -Uri "https://builds.dotnet.microsoft.com/dotnet/release-metadata/$ChannelVersion/releases.json" -Headers @{'User-Agent'='PowerShell'}
+        $latestRelease = $releases.releases[0]
+        
+        if ($latestRelease.sdk) {
+            $winX64 = $latestRelease.sdk.files | Where-Object { $_.name -like '*win-x64.exe' }
+            $winX86 = $latestRelease.sdk.files | Where-Object { $_.name -like '*win-x86.exe' }
+            
+            return @{
+                X64Url = if ($winX64) { $winX64.url } else { $null }
+                X86Url = if ($winX86) { $winX86.url } else { $null }
+                Version = $latestRelease.sdk.version
+            }
+        }
+        return $null
+    }
+    catch {
+        Write-Warning "Failed to get latest SDK download URLs: $_"
+        return $null
+    }
+}
+
+# Function to check for latest .NET Core Uninstall Tool version
+function Get-LatestUninstallToolVersion {
+    try {
+        Write-Output "Checking for latest .NET Core Uninstall Tool version..."
+        
+        # Try to get the latest release page content directly
+        $response = Invoke-WebRequest -Uri 'https://github.com/dotnet/cli-lab/releases/latest' -UseBasicParsing -Headers @{'User-Agent'='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        # Look for the MSI download link in the page content
+        if ($response.Content -match 'href="[^"]*dotnet-core-uninstall-([0-9]+\.[0-9]+\.[0-9]+)\.msi[^"]*"') {
+            return @{
+                Version = $matches[1]
+                DownloadUrl = "https://github.com/dotnet/cli-lab/releases/download/$($matches[1])/dotnet-core-uninstall-$($matches[1]).msi"
+            }
+        }
+        
+        # Alternative pattern matching
+        if ($response.Content -match '/dotnet-core-uninstall-([0-9]+\.[0-9]+\.[0-9]+)\.msi') {
+            return @{
+                Version = $matches[1]
+                DownloadUrl = "https://github.com/dotnet/cli-lab/releases/download/$($matches[1])/dotnet-core-uninstall-$($matches[1]).msi"
+            }
+        }
+        
+        Write-Warning "Could not extract version from GitHub releases page"
+        return $null
+    }
+    catch {
+        Write-Warning "Failed to check for latest uninstall tool version: $_"
+        return $null
+    }
+}
+function Test-VersionUpToDate {
+    param(
+        [string]$CurrentVersion,
+        [string]$LatestVersion
+    )
+    
+    try {
+        # Check if versions are not empty
+        if ([string]::IsNullOrWhiteSpace($CurrentVersion) -or [string]::IsNullOrWhiteSpace($LatestVersion)) {
+            Write-Warning "Invalid version data provided for comparison"
+            return $false
+        }
+        
+        $current = [version]$CurrentVersion
+        $latest = [version]$LatestVersion
+        return $current -ge $latest
+    }
+    catch {
+        Write-Warning "Failed to compare versions: $_"
+        return $false
+    }
+}
+
 # Define the versions to keep
 $versionsToKeep = "8.0.404"
+
+# Check for updates and provide feedback
+Write-Output "=== Checking for Updates ==="
+$latestSDKInfo = Get-LatestDotNetSDKVersion -ChannelVersion "8.0"
+
+if ($latestSDKInfo) {
+    Write-Output "Current SDK version in script: $versionsToKeep"
+    Write-Output "Latest available SDK version: $($latestSDKInfo.Version)"
+    Write-Output "Latest release date: $($latestSDKInfo.ReleaseDate)"
+    
+    $isUpToDate = Test-VersionUpToDate -CurrentVersion $versionsToKeep -LatestVersion $latestSDKInfo.Version
+    
+    if ($isUpToDate) {
+        Write-Output "✓ The SDK version in this script is up to date!"
+    }
+    else {
+        Write-Output "⚠ WARNING: A newer SDK version is available!"
+        Write-Output "  Consider updating the script to use version $($latestSDKInfo.Version)"
+        
+        # Get updated download URLs
+        $latestUrls = Get-LatestSDKDownloadUrls -ChannelVersion "8.0"
+        if ($latestUrls) {
+            Write-Output "  Latest download URLs:"
+            Write-Output "    x64: $($latestUrls.X64Url)"
+            Write-Output "    x86: $($latestUrls.X86Url)"
+        }
+    }
+}
+else {
+    Write-Output "⚠ Could not check for SDK updates. Proceeding with current version."
+}
+
+# Check uninstall tool version
+$currentUninstallVersion = "1.7.550802"
+$latestUninstallInfo = Get-LatestUninstallToolVersion
+
+if ($latestUninstallInfo -and $latestUninstallInfo.Version) {
+    Write-Output ""
+    Write-Output "Current uninstall tool version in script: $currentUninstallVersion"
+    Write-Output "Latest available uninstall tool version: $($latestUninstallInfo.Version)"
+    
+    $isUninstallToolUpToDate = Test-VersionUpToDate -CurrentVersion $currentUninstallVersion -LatestVersion $latestUninstallInfo.Version
+    
+    if ($isUninstallToolUpToDate) {
+        Write-Output "✓ The uninstall tool version in this script is up to date!"
+    }
+    else {
+        Write-Output "⚠ WARNING: A newer uninstall tool version is available!"
+        Write-Output "  Consider updating the script to use version $($latestUninstallInfo.Version)"
+        Write-Output "  Latest download URL: $($latestUninstallInfo.DownloadUrl)"
+    }
+}
+else {
+    Write-Output ""
+    Write-Output "⚠ Could not check for uninstall tool updates. Proceeding with current version."
+    Write-Output "  Current uninstall tool version in script: $currentUninstallVersion"
+}
+
+Write-Output "================================"
+Write-Output ""
 
 # Get the download links for the .NET SDK Download Page: https://dotnet.microsoft.com/en-us/download/dotnet/8.0
 $sdk64Link = "https://download.visualstudio.microsoft.com/download/pr/ba3a1364-27d8-472e-a33b-5ce0937728aa/6f9495e5a587406c85af6f93b1c89295/dotnet-sdk-8.0.404-win-x64.exe"
